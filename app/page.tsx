@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, BookOpen, CalendarDays, Check, ChevronLeft, ChevronRight, CircleMinus, CirclePlus, GripVertical, MoreHorizontal, Pencil, Plus, RotateCcw, Search, Settings2, Sparkles, Trash2, X } from "lucide-react";
 import { Material, Subject, Unit, availableDays, recommendedDaily, scheduleState, subjectColors, todayISO } from "@/lib/planner";
 
-const STORAGE_KEY = "study-progress-v1";
 const subjects: Subject[] = ["国語", "数学", "理科", "社会", "英語", "その他"];
 const initialForm = () => ({ title: "", subject: "数学" as Subject, unit: "ページ" as Unit, total: 100, progress: 0, dailyAmount: 10, startDate: todayISO(), dueDate: addDays(todayISO(), 14), unavailableDates: [] as string[] });
 
@@ -15,6 +14,7 @@ function formatNumber(value: number) { return Number.isInteger(value) ? String(v
 export default function Home() {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(initialForm);
@@ -29,8 +29,19 @@ export default function Home() {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { const timer = window.setTimeout(() => { try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) setMaterials(JSON.parse(saved)); } catch {} setLoaded(true); }, 650); return () => window.clearTimeout(timer); }, []);
-  useEffect(() => { if (loaded) localStorage.setItem(STORAGE_KEY, JSON.stringify(materials)); }, [materials, loaded]);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/materials", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as { materials?: Material[]; signInPath?: string; error?: string };
+        if (response.status === 401 && body.signInPath) { window.location.assign(body.signInPath); return; }
+        if (!response.ok) throw new Error(body.error ?? "load_failed");
+        if (active) setMaterials(body.materials ?? []);
+      })
+      .catch(() => { if (active) setSyncError("クラウドから読み込めませんでした。再読み込みしてください。"); })
+      .finally(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => { const close = (event: PointerEvent) => { if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenuId(null); }; window.addEventListener("pointerdown", close); return () => window.removeEventListener("pointerdown", close); }, []);
 
   const visible = useMemo(() => {
@@ -44,18 +55,40 @@ export default function Home() {
 
   function openCreate() { setEditingId(null); setForm(initialForm()); setCalendarMonth(todayISO().slice(0, 7)); setDialogOpen(true); }
   function openEdit(material: Material) { setEditingId(material.id); setForm({ title: material.title, subject: material.subject, unit: material.unit, total: material.total, progress: material.progress, dailyAmount: material.dailyAmount, startDate: material.startDate, dueDate: material.dueDate, unavailableDates: material.unavailableDates }); setCalendarMonth(material.startDate.slice(0, 7)); setMenuId(null); setDialogOpen(true); }
-  function saveMaterial(event: React.FormEvent) { event.preventDefault(); if (!form.title.trim() || form.total <= 0 || form.startDate > form.dueDate) return; const now = new Date().toISOString(); if (editingId) setMaterials((items) => items.map((m) => m.id === editingId ? { ...m, ...form, title: form.title.trim(), progress: Math.min(form.progress, form.total), updatedAt: now } : m)); else setMaterials((items) => [...items, { ...form, id: crypto.randomUUID(), title: form.title.trim(), order: items.length, createdAt: now, updatedAt: now }]); setDialogOpen(false); }
-  function adjust(id: string, delta: number) { setMaterials((items) => items.map((m) => m.id === id ? { ...m, progress: Math.max(0, Math.min(m.total, m.progress + delta)), updatedAt: new Date().toISOString() } : m)); }
-  function remove(id: string) { if (window.confirm("この教材を削除しますか？")) setMaterials((items) => items.filter((m) => m.id !== id)); setMenuId(null); }
-  function duplicate(material: Material) { setMaterials((items) => [...items, { ...material, id: crypto.randomUUID(), title: `${material.title} のコピー`, order: items.length, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]); setMenuId(null); }
-  function move(id: string, direction: -1 | 1) { const ordered = [...materials].sort((a, b) => a.order - b.order); const index = ordered.findIndex((m) => m.id === id); const next = index + direction; if (next < 0 || next >= ordered.length) return; [ordered[index], ordered[next]] = [ordered[next], ordered[index]]; setMaterials(ordered.map((m, i) => ({ ...m, order: i }))); }
-  function dropOn(targetId: string) { if (!draggedId || draggedId === targetId) return; const ordered = [...materials].sort((a, b) => a.order - b.order); const from = ordered.findIndex((m) => m.id === draggedId); const to = ordered.findIndex((m) => m.id === targetId); const [item] = ordered.splice(from, 1); ordered.splice(to, 0, item); setMaterials(ordered.map((m, i) => ({ ...m, order: i }))); setDraggedId(null); }
+  async function request(method: string, body?: unknown, suffix = "") {
+    const response = await fetch(`/api/materials${suffix}`, { method, headers: body ? { "content-type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+    const result = await response.json() as { signInPath?: string; error?: string };
+    if (response.status === 401 && result.signInPath) { window.location.assign(result.signInPath); return; }
+    if (!response.ok) { setSyncError("クラウドへの保存に失敗しました。再読み込みしてください。"); throw new Error(result.error ?? "save_failed"); }
+    setSyncError("");
+    return result;
+  }
+  function persistOrder(items: Material[]) { void request("PATCH", { orders: items.map((m) => ({ id: m.id, order: m.order })) }); }
+  function saveMaterial(event: React.FormEvent) {
+    event.preventDefault(); if (!form.title.trim() || form.total <= 0 || form.startDate > form.dueDate) return;
+    const now = new Date().toISOString();
+    if (editingId) {
+      const previous = materials.find((m) => m.id === editingId); if (!previous) return;
+      const updated = { ...previous, ...form, title: form.title.trim(), progress: Math.min(form.progress, form.total), updatedAt: now };
+      setMaterials((items) => items.map((m) => m.id === editingId ? updated : m)); void request("PUT", updated);
+    } else {
+      const created: Material = { ...form, id: crypto.randomUUID(), title: form.title.trim(), order: materials.length, createdAt: now, updatedAt: now };
+      setMaterials((items) => [...items, created]); void request("POST", created);
+    }
+    setDialogOpen(false);
+  }
+  function adjust(id: string, delta: number) { const current = materials.find((m) => m.id === id); if (!current) return; const updated = { ...current, progress: Math.max(0, Math.min(current.total, current.progress + delta)), updatedAt: new Date().toISOString() }; setMaterials((items) => items.map((m) => m.id === id ? updated : m)); void request("PUT", updated); }
+  function remove(id: string) { if (window.confirm("この教材を削除しますか？")) { setMaterials((items) => items.filter((m) => m.id !== id)); void request("DELETE", undefined, `?id=${encodeURIComponent(id)}`); } setMenuId(null); }
+  function duplicate(material: Material) { const now = new Date().toISOString(); const created = { ...material, id: crypto.randomUUID(), title: `${material.title} のコピー`, order: materials.length, createdAt: now, updatedAt: now }; setMaterials((items) => [...items, created]); void request("POST", created); setMenuId(null); }
+  function move(id: string, direction: -1 | 1) { const ordered = [...materials].sort((a, b) => a.order - b.order); const index = ordered.findIndex((m) => m.id === id); const next = index + direction; if (next < 0 || next >= ordered.length) return; [ordered[index], ordered[next]] = [ordered[next], ordered[index]]; const changed = ordered.map((m, i) => ({ ...m, order: i })); setMaterials(changed); persistOrder(changed); }
+  function dropOn(targetId: string) { if (!draggedId || draggedId === targetId) return; const ordered = [...materials].sort((a, b) => a.order - b.order); const from = ordered.findIndex((m) => m.id === draggedId); const to = ordered.findIndex((m) => m.id === targetId); const [item] = ordered.splice(from, 1); ordered.splice(to, 0, item); const changed = ordered.map((m, i) => ({ ...m, order: i })); setMaterials(changed); persistOrder(changed); setDraggedId(null); }
 
   const totalDone = materials.reduce((sum, m) => sum + Math.min(m.progress / m.total, 1), 0);
   if (!loaded) return <AppSkeleton />;
   return <main className="app-shell">
     <header className="topbar glass"><div className="brand"><span className="brand-mark"><BookOpen size={19} /></span><span>学習進捗</span></div><div className="header-actions"><label className="search"><Search size={17} /><input aria-label="教材を検索" placeholder="教材を検索" value={query} onChange={(e) => setQuery(e.target.value)} /></label><button className="primary" onClick={openCreate}><Plus size={18} />新規作成</button></div></header>
     <section className="workspace">
+      {syncError && <div className="sync-error" role="alert">{syncError}<button onClick={() => window.location.reload()}>再読み込み</button></div>}
       <div className="summary-row"><div><p className="eyebrow">教材一覧</p><h1>{materials.length}件の教材</h1></div><div className="summary-stats glass-subtle"><span><b>{materials.filter((m) => m.progress >= m.total).length}</b> 完了</span><i /><span><b>{materials.length ? Math.round(totalDone / materials.length * 100) : 0}%</b> 全体</span></div></div>
       <div className="toolbar"><div className="subject-tabs" role="tablist" aria-label="教科フィルター">{(["すべて", ...subjects] as const).map((subject) => <button role="tab" aria-selected={subjectFilter === subject} key={subject} onClick={() => setSubjectFilter(subject)} className={subjectFilter === subject ? "active" : ""}>{subject !== "すべて" && <span style={{ background: subjectColors[subject] }} />}{subject}</button>)}</div><label className="sort"><Settings2 size={16} /><select aria-label="並び順" value={sort} onChange={(e) => setSort(e.target.value)}><option value="manual">手動</option><option value="due">期限が近い順</option><option value="progress">進捗が多い順</option><option value="created">新しい順</option></select></label></div>
       {visible.length === 0 ? <EmptyState onCreate={openCreate} hasAny={materials.length > 0} /> : <div className="card-grid">{visible.map((material) => {
