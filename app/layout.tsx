@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "学習進捗",
+  title: "study tracker",
   description: "教材の量と期限から一日の学習量を逆算する進捗管理アプリ",
   icons: {
     icon: "/favicon.svg",

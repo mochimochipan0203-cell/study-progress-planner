@@ -86,7 +86,7 @@ export default function Home() {
   const totalDone = materials.reduce((sum, m) => sum + Math.min(m.progress / m.total, 1), 0);
   if (!loaded) return <AppSkeleton />;
   return <main className="app-shell">
-    <header className="topbar glass"><div className="brand"><span className="brand-mark"><BookOpen size={19} /></span><span>学習進捗</span></div><div className="header-actions"><label className="search"><Search size={17} /><input aria-label="教材を検索" placeholder="教材を検索" value={query} onChange={(e) => setQuery(e.target.value)} /></label><button className="primary" onClick={openCreate}><Plus size={18} />新規作成</button></div></header>
+    <header className="topbar glass"><div className="brand"><span className="brand-mark"><BookOpen size={19} /></span><span>study tracker</span></div><div className="header-actions"><label className="search"><Search size={17} /><input aria-label="教材を検索" placeholder="教材を検索" value={query} onChange={(e) => setQuery(e.target.value)} /></label><button className="primary" onClick={openCreate}><Plus size={18} />新規作成</button></div></header>
     <section className="workspace">
       {syncError && <div className="sync-error" role="alert">{syncError}<button onClick={() => window.location.reload()}>再読み込み</button></div>}
       <div className="summary-row"><div><p className="eyebrow">教材一覧</p><h1>{materials.length}件の教材</h1></div><div className="summary-stats glass-subtle"><span><b>{materials.filter((m) => m.progress >= m.total).length}</b> 完了</span><i /><span><b>{materials.length ? Math.round(totalDone / materials.length * 100) : 0}%</b> 全体</span></div></div>
